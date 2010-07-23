@@ -1,45 +1,81 @@
+import Data.List
 import Network
 import System.IO
-import Text.Printf
-import Data.List
 import System.Exit
-
+import Control.Arrow
+import Control.Monad.Reader
+import Control.Exception -- *** for base-3
+-- import Control.OldException -- *** for base-4
+import Text.Printf
+import Prelude hiding (catch)
+ 
 server = "irc.freenode.org"
 port   = 6667
 chan   = "#tutbot-testing"
-nick   = "my-demosthenes"
+nick   = "tutbot"
  
-main = do
+-- The 'Net' monad, a wrapper over IO, carrying the bot's immutable state.
+type Net = ReaderT Bot IO
+data Bot = Bot { socket :: Handle }
+ 
+-- Set up actions to run on start and end, and run the main loop
+main :: IO ()
+main = bracket connect disconnect loop
+  where
+    disconnect = hClose . socket
+--    loop st    = catch (runReaderT run st) (const $ return ())
+    loop st    = catch (runReaderT run st) (\(SomeException _) -> return ()) -- *** Control.Exception with base-4
+ 
+-- Connect to the server and return the initial bot state
+connect :: IO Bot
+connect = notify $ do
     h <- connectTo server (PortNumber (fromIntegral port))
     hSetBuffering h NoBuffering
-    write h "NICK" nick
-    write h "USER" (nick++" 0 * :tutorial bot")
-    write h "JOIN" chan
-    listen h
+    return (Bot h)
+  where
+    notify a = bracket_
+        (printf "Connecting to %s ... " server >> hFlush stdout)
+        (putStrLn "done.")
+        a
  
-write :: Handle -> String -> String -> IO ()
-write h s t = do
-    hPrintf h "%s %s\r\n" s t
-    printf    "> %s %s\n" s t
+-- We're in the Net monad now, so we've connected successfully
+-- Join a channel, and start processing commands
+run :: Net ()
+run = do
+    write "NICK" nick
+    write "USER" (nick++" 0 * :tutorial bot")
+    write "JOIN" chan
+    asks socket >>= listen
  
-listen :: Handle -> IO ()
+-- Process each line from the server
+listen :: Handle -> Net ()
 listen h = forever $ do
-    t <- hGetLine h
-    let s = init t
-    if ping s then pong s else eval h (clean s)
-    putStrLn s
+    s <- init `fmap` io (hGetLine h)
+    io (putStrLn s)
+    if ping s then pong s else eval (clean s)
   where
     forever a = a >> forever a
- 
     clean     = drop 1 . dropWhile (/= ':') . drop 1
- 
     ping x    = "PING :" `isPrefixOf` x
-    pong x    = write h "PONG" (':' : drop 6 x)
-
-eval :: Handle -> String -> IO ()
-eval h    "!quit"                = write h "QUIT" ":Exiting" >> exitWith ExitSuccess
-eval h x | "!id " `isPrefixOf` x = privmsg h (drop 4 x)
-eval _   _                       = return () -- ignore everything else 
-
-privmsg :: Handle -> String -> IO ()
-privmsg h s = write h "PRIVMSG" (chan ++ " :" ++ s)
+    pong x    = write "PONG" (':' : drop 6 x)
+ 
+-- Dispatch a command
+eval :: String -> Net ()
+eval     "!quit"               = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
+eval x | "!id " `isPrefixOf` x = privmsg (drop 4 x)
+eval     _                     = return () -- ignore everything else
+ 
+-- Send a privmsg to the current chan + server
+privmsg :: String -> Net ()
+privmsg s = write "PRIVMSG" (chan ++ " :" ++ s)
+ 
+-- Send a message out to the server we're currently connected to
+write :: String -> String -> Net ()
+write s t = do
+    h <- asks socket
+    io $ hPrintf h "%s %s\r\n" s t
+    io $ printf    "> %s %s\n" s t
+ 
+-- Convenience.
+io :: IO a -> Net a
+io = liftIO
