@@ -11,8 +11,8 @@ import Prelude hiding (catch)
  
 server = "irc.freenode.org"
 port   = 6667
-chan   = "#tutbot-testing"
-nick   = "tutbot"
+chan   = "#apfelstrudel"
+nick   = "StrudelTesting"
  
 -- The 'Net' monad, a wrapper over IO, carrying the bot's immutable state.
 type Net = ReaderT Bot IO
@@ -43,7 +43,7 @@ connect = notify $ do
 run :: Net ()
 run = do
     write "NICK" nick
-    write "USER" (nick++" 0 * :tutorial bot")
+    write "USER" (nick++" 0 * :testing bot")
     write "JOIN" chan
     asks socket >>= listen
  
@@ -52,18 +52,19 @@ listen :: Handle -> Net ()
 listen h = forever $ do
     s <- init `fmap` io (hGetLine h)
     io (putStrLn s)
-    if ping s then pong s else eval (clean s)
+    if ping s then pong s else eval (clean s) (getName s)
   where
     forever a = a >> forever a
     clean     = drop 1 . dropWhile (/= ':') . drop 1
+    getName x = if ("PRIVMSG" `isInfixOf` x) then (takeWhile (/= '!') . drop 1) x else ""
     ping x    = "PING :" `isPrefixOf` x
     pong x    = write "PONG" (':' : drop 6 x)
  
--- Dispatch a command
-eval :: String -> Net ()
-eval     "!quit"               = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
-eval x | "!id " `isPrefixOf` x = privmsg (drop 4 x)
-eval     _                     = return () -- ignore everything else
+-- Dispatch a command, given a string and the name of the commenter
+eval :: String -> String -> Net ()
+eval     "!quit" _               = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
+eval x n | "!id " `isPrefixOf` x = privmsg (n ++ ": " ++ drop 4 x)
+eval     _ _                     = return () -- ignore everything else
  
 -- Send a privmsg to the current chan + server
 privmsg :: String -> Net ()
