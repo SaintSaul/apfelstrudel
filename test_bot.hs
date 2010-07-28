@@ -2,21 +2,23 @@ import Data.List
 import Network
 import System.IO
 import System.Exit
+import System.Random
 import Control.Arrow
 import Control.Monad.Reader
 import Control.Exception -- *** for base-3
 -- import Control.OldException -- *** for base-4
 import Text.Printf
 import Prelude hiding (catch)
+import Char
  
 server = "irc.freenode.org"
 port   = 6667
 chan   = "#apfelstrudel"
-nick   = "StrudelTesting"
+nick   = "StrudelTesting2"
  
 -- The 'Net' monad, a wrapper over IO, carrying the bot's immutable state.
 type Net = ReaderT Bot IO
-data Bot = Bot { socket :: Handle }
+data Bot = Bot { socket :: Handle, rangen :: StdGen}
  
 -- Set up actions to run on start and end, and run the main loop
 main :: IO ()
@@ -31,7 +33,8 @@ connect :: IO Bot
 connect = notify $ do
     h <- connectTo server (PortNumber (fromIntegral port))
     hSetBuffering h NoBuffering
-    return (Bot h)
+    g <- getStdGen
+    return (Bot h g)
   where
     notify a = bracket_
         (printf "Connecting to %s ... " server >> hFlush stdout)
@@ -62,9 +65,29 @@ listen h = forever $ do
  
 -- Dispatch a command, given a string and the name of the commenter
 eval :: String -> String -> Net ()
-eval     "!quit" _               = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
-eval x n | "!id " `isPrefixOf` x = privmsg (n ++ ": " ++ drop 4 x)
-eval     _ _                     = return () -- ignore everything else
+eval     "!quit" _                  = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
+eval x n | "!id " `isPrefixOf` x    = privmsg (n ++ ": " ++ drop 4 x)
+eval x n | "!roll " `isPrefixOf` x  = do gen <- asks rangen
+                                         privmsg (handleRoll (drop 6 x) n gen)
+  where
+    handleRoll :: String -> String -> StdGen -> String
+    handleRoll x n gen = let
+      num = read (takeWhile (/= 'd') x) :: Int
+      max = read ((takeWhile (isDigit) . drop 1 . (dropWhile (/= 'd'))) x) :: Int
+      in
+        if (num<=30 && num>0) then let
+          rolls = getRolls num max gen
+          rollsString = (\str -> take ((length str) - 2) str) (foldl (\str x -> str ++ (show x) ++ ", ") "" rolls)
+          in
+          n ++ ": I will roll " ++ (show num) ++ " dice with " ++ (show max) ++ " sides each. Results:" ++ rollsString ++ ". Total: " ++ (show $ sum rolls)
+        else
+          "No."
+    getRolls :: Int -> Int -> StdGen -> [Int]
+    getRolls num max gen = let
+      (randNum, gen') = randomR (1,max) gen :: (Int, StdGen)
+      in
+      if num == 0 then [] else randNum : (getRolls (num-1) max gen')
+eval     _ _                        = return () -- ignore everything else
  
 -- Send a privmsg to the current chan + server
 privmsg :: String -> Net ()
