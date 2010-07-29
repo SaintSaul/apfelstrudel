@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 import Data.List
 import Network
 import System.IO
@@ -10,11 +12,16 @@ import Control.Exception -- *** for base-3
 import Text.Printf
 import Prelude hiding (catch)
 import Char
+import Codec.Binary.UTF8.String
+import qualified Data.ByteString as BS
+import Data.ByteString.Internal
  
-server = "irc.freenode.org"
+--server = "irc.freenode.org"
+server = "irc.factset.com"
 port   = 6667
-chan   = "#apfelstrudel"
-nick   = "ApfelStrudel"
+--chan   = "#apfelstrudel"
+chan   = "#interns"
+nick   = "gadget"
  
 -- The 'Net' monad, a wrapper over IO, carrying the bot's immutable state.
 type Net = ReaderT Bot IO
@@ -38,7 +45,7 @@ connect = notify $ do
   where
     notify a = bracket_
         (printf "Connecting to %s ... " server >> hFlush stdout)
-        (putStrLn "done.")
+        (psl "done.")
         a
  
 -- We're in the Net monad now, so we've connected successfully
@@ -46,15 +53,15 @@ connect = notify $ do
 run :: Net ()
 run = do
     write "NICK" nick
-    write "USER" (nick++" 0 * :Apfel Strudel")
+    write "USER" (nick++" 0 * :prichardson")
     write "JOIN" chan
     asks socket >>= listen
  
 -- Process each line from the server
 listen :: Handle -> Net ()
 listen h = forever $ do
-    s <- init `fmap` io (hGetLine h)
-    io (putStrLn s)
+    s <- (init . (map w2c) . BS.unpack) `fmap` io (BS.hGetLine h)
+    io (psl s)
     if ping s then pong s else eval (clean s) (getName s)
   where
     forever a = a >> forever a
@@ -65,7 +72,7 @@ listen h = forever $ do
  
 -- Dispatch a command, given a string and the name of the commenter
 eval :: String -> String -> Net ()
-eval     "!quit" _                  = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
+eval     "DO A BARREL ROLL" _                  = write "QUIT" ":Exiting" >> io (exitWith ExitSuccess)
 eval x n | "!id " `isPrefixOf` x    = privmsg (n ++ ": " ++ drop 4 x)
 eval x n | "!roll " `isPrefixOf` x  = do gen <- asks rangen
                                          privmsg (handleRoll x n gen)
@@ -102,13 +109,15 @@ capWord :: String -> String
 capWord [] = []
 capWord (x:xs) = toUpper x : xs
 
+oprs = ["-", "+", "*"]
+
 handleRoll :: String -> String -> StdGen -> String
 handleRoll x n gen = let
   (num, max, opr, delta) = parseDice x
   valid = (num<=30 && num>0 && max>0)
   rolls = if valid then doRolls num max opr delta gen else []
   rollsString = (\str -> take ((length str) - 2) str) (foldl (\str x -> str ++ (show x) ++ ", ") "" rolls)
-  diceString  = (show num) ++ "d" ++ (show max) ++ if (delta>0) then (opr ++ (show delta)) else ""
+  diceString  = (show num) ++ "d" ++ (show max) ++ if (delta>0 && opr `elem` oprs) then (opr ++ (show delta)) else ""
   in
   if valid then
     n ++ ": " ++ diceString ++ ": " ++ rollsString ++ ". Total: " ++ (show $ sum rolls)
@@ -120,7 +129,7 @@ parseDice :: String -> (Int, Int, [Char], Int)
 parseDice str = let
   x = dropWhile (not . isDigit) $ str
   (num, x1)   = readFirstInt (span (isDigit) x)
-  (max, x2)   = readFirstInt (span (isDigit) . (dropWhile (not . isDigit)) $ x1)
+  (max, x2)   = if ((map toUpper . take 1 . dropWhile (isSpace)) x1 == "D") then readFirstInt (span (isDigit) . (dropWhile (not . isDigit)) $ x1) else (-1,x1)
   (opr, x3)   = if (length (dropWhile (isSpace) x2) > 0) then splitAt 1 (dropWhile (isSpace) x2) else ("", x2)
   (delta, x4) = if (length (dropWhile (isSpace) x3) > 0) then readFirstInt (span (isDigit) (dropWhile (isSpace) x3)) else (0, x3)
   in
@@ -161,8 +170,15 @@ write :: String -> String -> Net ()
 write s t = do
     h <- asks socket
     io $ hPrintf h "%s %s\r\n" s t
-    io $ printf    "> %s %s\n" s t
+    io $ putStr "> "
+    io $ putStr s
+    io $ putStr " "
+    io $ BS.putStr $ BS.pack $ map c2w t
+    io $ putStr "\n"
  
 -- Convenience.
 io :: IO a -> Net a
 io = liftIO
+
+psl = BS.putStrLn . BS.pack . map c2w
+
